@@ -1,0 +1,1629 @@
+<!doctype html>
+<!--
+  Orbit Desk - satellite tracker
+  Team: Vibhav, Samhita, Subash, Suryanshu
+  v6: colored Earth with a night side and city lights, loader moved under the map, 3D globe
+
+  Just save this file and double click it, it opens in any normal browser.
+  It needs internet for the satellite.js library and for downloading
+  satellite data. Without internet you can still paste your own data
+  into the box on the right.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Orbit Desk - Satellite Tracker</title>
+
+<!-- satellite.js does the hard orbit maths (SGP4) for us -->
+<script src="https://cdn.jsdelivr.net/npm/satellite.js@6.0.2/dist/satellite.min.js"></script>
+<!-- backup link if the first one is down. Careful: this old version can't
+     read the newer OMM format, so satellites numbered 100000+ won't load -->
+<script>
+  if (!window.satellite) {
+    document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/satellite.js/5.0.0/satellite.min.js"><\/script>');
+  }
+</script>
+
+<style>
+/* colors: a dark "space" theme */
+:root {
+  --bg: #0a1020;
+  --panel: #101a33;
+  --ink: #e9eefb;
+  --dim: #8fa0c4;
+  --line: #243256;
+  --sun: #ffb84d;      /* track in sunlight: gold */
+  --ecl: #c77dff;      /* track in shadow: violet (blue got lost on the ocean) */
+  --hot: #ff6b6b;
+  --accent: #5eead4;
+  --btn: #16213f;
+  color-scheme: dark;
+  /* keeps the page away from the phone notch */
+  box-sizing: border-box;
+  padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px);
+}
+
+* { box-sizing: border-box; }
+html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+header { padding: 14px 18px 10px; }
+h1 { font: 600 22px Georgia, "Times New Roman", serif; margin: 0 0 8px; }
+h2 { font-size: 15px; font-weight: 600; margin: 20px 0 6px; color: var(--accent); }
+
+.sat-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.sat-row select { flex: 1; min-width: 0; max-width: 420px; }
+
+.controls { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+#clock { margin-top: 8px; color: var(--dim); font-variant-numeric: tabular-nums; }
+
+button, select, input, textarea {
+  font: inherit;
+  color: var(--ink);
+  background: var(--btn);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 4px 10px;
+}
+button { cursor: pointer; }
+button, select { touch-action: manipulation; } /* no double-tap zoom delay on phones */
+button:hover { border-color: var(--accent); }
+button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #062a2a; }
+label select { margin: 0 3px; }
+
+/* two columns: map on the left, info on the right */
+main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; align-items: stretch; }
+.left-side { padding: 0 18px 18px; min-width: 0; }
+aside { padding: 0 18px 24px; background: var(--panel); border-left: 1px solid var(--line); }
+
+#map-canvas {
+  display: block;
+  width: 100%;
+  aspect-ratio: 2 / 1;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+/* old browsers without aspect-ratio */
+@supports not (aspect-ratio: 2 / 1) {
+  #map-canvas { height: 46vw; min-height: 220px; }
+}
+
+.legend { color: var(--dim); font-size: 13px; margin: 6px 0 16px; }
+.legend b { font-weight: 600; }
+
+.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+figure { margin: 0; }
+figcaption { color: var(--dim); font-size: 13px; }
+.charts canvas {
+  width: 100%;
+  height: 130px;
+  display: block;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 6px;
+}
+
+/* the info lists on the right: label on the left, value on the right */
+dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; }
+dt { color: var(--dim); }
+dt small { display: block; font-size: 12px; line-height: 1.3; } /* the little explanation */
+dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+td, th { padding: 2px 0; text-align: right; }
+th { color: var(--dim); font-weight: 400; }
+td:first-child, th:first-child { text-align: left; }
+
+.sun { color: var(--sun); }
+.ecl { color: var(--ecl); }
+.bad { color: var(--hot); }
+#data-age-info p { margin: 4px 0 0; }
+
+/* the box for loading satellites, now under the map */
+.loader { margin: 0 0 8px; padding: 10px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+summary { cursor: pointer; font-weight: 600; color: var(--accent); }
+
+/* the 3D globe */
+.globe-bar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 4px 0 8px; }
+.globe-bar .hint { color: var(--dim); font-size: 13px; }
+#globe-canvas {
+  display: block;
+  width: 100%;
+  height: 440px;
+  margin-bottom: 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #070c18;
+  cursor: grab;
+  touch-action: none;  /* so dragging turns the globe instead of scrolling the page */
+}
+#globe-canvas:active { cursor: grabbing; }
+.small-note { color: var(--dim); font-size: 13px; margin: 8px 0 0; }
+textarea {
+  width: 100%;
+  height: 84px;
+  font: 12px ui-monospace, Menlo, Consolas, monospace;
+  margin: 8px 0 6px;
+}
+.row { display: flex; gap: 6px; margin-bottom: 6px; }
+.row input { flex: 1; min-width: 0; }
+#message { color: var(--dim); font-size: 13px; margin: 4px 0 0; }
+
+footer { padding: 0 18px 20px; color: var(--dim); font-size: 13px; }
+
+/* small screens: everything in one column */
+@media (max-width: 860px) {
+  main, .charts { grid-template-columns: 1fr; }
+  dl { grid-template-columns: 3fr 2fr; } /* stops the long labels squeezing the values */
+}
+
+/* phones: smaller side gaps and a taller map so dots are easier to tap */
+@media (max-width: 600px) {
+  header { padding: 12px 12px 8px; }
+  .left-side { padding: 0 12px 14px; }
+  aside { padding: 0 12px 20px; }
+  footer { padding: 0 12px 20px; }
+  #map-canvas { aspect-ratio: 3 / 2; }
+  #globe-canvas { height: 340px; }
+}
+
+/* touch screens: bigger buttons, and 16px text so iPhones don't zoom in on typing */
+@media (pointer: coarse) {
+  button, select, input, textarea { min-height: 44px; font-size: 16px; }
+}
+</style>
+</head>
+
+<body>
+
+<header>
+  <h1>Orbit Desk</h1>
+
+  <!-- the picker is up here so on a phone you don't have to scroll down to change satellite -->
+  <div class="sat-row">
+    <label for="satellite-select">Satellite</label>
+    <select id="satellite-select"></select>
+  </div>
+
+  <div class="controls">
+    <button id="pause-button" aria-pressed="false">Pause</button>
+
+    <label>Time speed (1 = real time)
+      <select id="speed-select">
+        <option>1</option>
+        <option>10</option>
+        <option>60</option>
+        <option>100</option>
+        <option>300</option>
+        <option>1000</option>
+      </select>×
+    </label>
+
+    <button id="now-button">Back to now</button>
+    <button id="epoch-button">Jump to data date</button>
+
+    <label>Show path for
+      <select id="orbits-select">
+        <option>1</option>
+        <option selected>2</option>
+        <option>3</option>
+        <option>4</option>
+        <option>5</option>
+      </select>
+      orbits
+    </label>
+  </div>
+  <div id="clock"></div>
+</header>
+
+<main>
+  <section class="left-side">
+    <canvas id="map-canvas" aria-label="World map with satellite positions"></canvas>
+    <div class="legend">
+      <b class="sun">Gold</b> = in sunlight, <b class="ecl">violet</b> = in Earth’s shadow.
+      Faint line = where it has already been. Dashed circle = the area it can see from up there.
+      The dark part of the map is night, and the yellow glow is city lights.
+      Click a dot to pick a satellite.
+    </div>
+
+    <details class="loader" open>
+      <summary>Load more satellites</summary>
+      <p class="small-note">
+        Satellites are described by "TLE" data: a few lines of numbers.
+        You can get them from celestrak.org.
+      </p>
+
+      <!-- one box for everything -->
+      <textarea id="search-box" placeholder="Paste a TLE (or OMM JSON) here, or type a NORAD number (25544), a launch ID (1998-067) or a name (NOAA 19)" spellcheck="false"></textarea>
+      <div class="row">
+        <button id="search-button">Search / load</button>
+        <input type="file" id="file-input" aria-label="Upload a TLE file">
+      </div>
+
+      <div class="row">
+        <select id="group-select" aria-label="Group of satellites">
+          <option value="stations">Space stations</option>
+          <option value="visual">Bright satellites</option>
+          <option value="weather">Weather</option>
+          <option value="gps-ops">GPS</option>
+          <option value="geo">Geostationary</option>
+        </select>
+        <button id="load-group-button">Load group</button>
+      </div>
+
+      <p id="message"></p>
+    </details>
+
+    <h2>3D view of the path</h2>
+    <div class="globe-bar">
+      <label><input type="checkbox" id="follow-box" checked> Follow the satellite</label>
+      <button id="globe-reset">Reset view</button>
+      <span class="hint">Drag to turn the Earth, scroll or pinch to zoom. Heights are to scale.</span>
+    </div>
+    <canvas id="globe-canvas" aria-label="3D globe showing the satellite and its path"></canvas>
+
+    <div class="charts">
+      <figure>
+        <figcaption>Height above Earth (km)</figcaption>
+        <canvas id="altitude-chart" aria-label="Chart of height over time"></canvas>
+      </figure>
+      <figure>
+        <figcaption>Speed (km/s)</figcaption>
+        <canvas id="speed-chart" aria-label="Chart of speed over time"></canvas>
+      </figure>
+    </div>
+  </section>
+
+  <aside>
+    <h2>Right now</h2>
+    <dl id="live-info"></dl>
+
+    <h2>Orbit</h2>
+    <dl id="orbit-info"></dl>
+
+    <h2>Path over the ground</h2>
+    <dl id="ground-path-info"></dl>
+
+    <h2>When it crosses the equator (going north)</h2>
+    <table id="equator-table"></table>
+
+    <h2>Is the data fresh?</h2>
+    <div id="data-age-info"></div>
+
+  </aside>
+</main>
+
+<footer>Made by Vibhav, Samhita, Subash and Suryanshu</footer>
+
+<script>
+// ============================================================
+// setup
+// ============================================================
+if (!window.satellite) {
+  document.body.insertAdjacentHTML("afterbegin",
+    '<p style="padding:16px">Could not load satellite.js. Check your internet connection and reload the page.</p>');
+  throw new Error("satellite.js missing");
+}
+
+const EARTH_RADIUS = 6378.137;  // km
+const MU = 398600.4418;         // Earth’s gravity constant (km^3/s^2)
+const DEG = Math.PI / 180;      // multiply by this to go from degrees to radians
+const MAX_SATS = 400;           // more than this and the page gets slow
+
+// everything is global, it was easier than passing stuff around
+let sats = [];                  // all loaded satellites
+let selectedIndex = 0;          // which one is picked
+let simTime = Date.now();       // the time on the clock (ms)
+let speed = 1;                  // how fast the clock runs
+let paused = false;
+let orbitsToShow = 2;
+let path = [];                  // points around the current time
+let chartData = [];             // part of path used for the charts
+let needsRedraw = true;         // set to true whenever something changed
+let lastFrame = performance.now();
+let lastPathUpdate = 0;
+let lastPanelUpdate = 0;
+let lastOthersUpdate = 0;
+
+// very rough continent outlines: [lon, lat, lon, lat, ...]
+const LAND_SHAPES = [
+  // North America
+  [
+    -168, 66, -140, 70, -125, 70, -95, 72, -80, 70, -62, 60, -55, 50, -66, 44,
+    -76, 35, -81, 25, -97, 26, -97, 18, -88, 16, -83, 9, -78, 8, -92, 14,
+    -105, 20, -110, 31, -118, 33, -124, 40, -124, 48, -135, 58, -152, 60, -165, 60
+  ],
+  // South America
+  [
+    -78, 8, -62, 11, -50, 0, -35, -6, -40, -22, -48, -26, -58, -38, -65, -42,
+    -68, -54, -75, -50, -73, -37, -71, -18, -81, -5
+  ],
+  // Europe and Asia
+  [
+    -9, 37, -9, 43, -2, 44, -4, 48, 4, 52, 10, 57, 18, 60, 25, 66,
+    30, 70, 45, 68, 70, 73, 100, 78, 140, 72, 180, 68, 180, 65, 163, 60,
+    157, 51, 141, 52, 135, 43, 127, 38, 122, 31, 120, 22, 108, 20, 106, 10,
+    102, 1, 98, 8, 93, 18, 80, 14, 77, 8, 72, 20, 68, 24, 57, 26,
+    48, 30, 35, 30, 34, 36, 28, 37, 26, 40, 23, 39, 15, 38, 5, 36,
+    -1, 38
+  ],
+  // Africa
+  [
+    -17, 21, -6, 36, 10, 37, 32, 31, 43, 12, 51, 12, 40, -5, 40, -15,
+    33, -26, 20, -35, 12, -18, 9, 4, -8, 4, -17, 14
+  ],
+  // Australia
+  [
+    114, -22, 130, -12, 142, -11, 153, -26, 150, -37, 138, -35, 115, -34
+  ],
+  // Greenland
+  [
+    -55, 60, -45, 60, -20, 70, -20, 82, -60, 82, -72, 76
+  ],
+  // Antarctica
+  [
+    -180, -70, 180, -70, 180, -90, -180, -90
+  ],
+  // a few islands (they all get the first land color)
+  [-5, 50, 2, 51, 0, 58, -5, 58],                          // Britain
+  [-24, 64, -14, 65, -18, 66],                             // Iceland
+  [130, 31, 141, 36, 142, 41, 140, 45, 137, 37],           // Japan
+  [95, 5, 106, -6, 101, -3],                               // Sumatra
+  [109, 2, 117, 7, 119, 1, 114, -4, 110, -3],              // Borneo
+  [44, -25, 49, -15, 50, -13, 44, -17],                    // Madagascar
+  [172, -34, 178, -38, 174, -41, 167, -46, 170, -44]       // New Zealand
+];
+
+const getEl = id => document.getElementById(id);
+
+
+// ============================================================
+// helpers
+// ============================================================
+
+// Each TLE line ends with a check digit. We work it out ourselves
+// to catch typos in pasted data.
+function checksum(line) {
+  let total = 0;
+  for (const ch of line.slice(0, 68)) {
+    if (ch >= "0" && ch <= "9") total += Number(ch);
+    else if (ch == "-") total += 1;
+  }
+  return total % 10;
+}
+
+// Reading CSS colors is slow, and phones struggled when we did it for every
+// dot. So we read them once per frame and keep them in this object.
+let colors = {};
+function loadColors() {
+  const style = getComputedStyle(document.documentElement);
+  for (const name of ["line", "sun", "ecl", "ink", "dim", "bg", "accent"]) {
+    colors[name] = style.getPropertyValue("--" + name).trim();
+  }
+}
+
+// makes the canvas pixel size match its size on screen so it isn't blurry
+function resizeCanvas(canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = devicePixelRatio || 1;
+  const w = Math.round(rect.width * dpr);
+  const h = Math.round(rect.height * dpr);
+  if (canvas.width != w || canvas.height != h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  return dpr;
+}
+
+// longitude / latitude -> pixels on the map
+const lonToX = (lon, width) => (lon + 180) / 360 * width;
+const latToY = (lat, height) => (90 - lat) / 180 * height;
+
+// "2026-11-10 14:30:00" style text, length = how many characters to keep
+const formatDateTime = (ms, length) => new Date(ms).toISOString().slice(0, length).replace("T", " ");
+
+
+// ============================================================
+// making satellite objects (from TLE or OMM data)
+// ============================================================
+function getOrbitType(a, inclination, eccentricity, perigeeAlt) {
+  if (a > 42000 && a < 42300 && inclination < 10 && eccentricity < 0.01) return "Geostationary (stays above one spot)";
+  if (eccentricity > 0.25) return "Very oval orbit (HEO)";
+  if (perigeeAlt < 2000) {
+    if (inclination > 96 && inclination < 102) return "Low Earth orbit, follows the sun";
+    return "Low Earth orbit (close to Earth)";
+  }
+  return "Medium Earth orbit";
+}
+
+// el = the orbit numbers from the TLE / OMM data
+function buildSatellite(name, satrec, epoch, el) {
+  const n = el.revsPerDay * 2 * Math.PI / 86400;        // radians per second
+  const a = Math.cbrt(MU / n / n);                      // average distance from Earth’s center
+  const periodSeconds = 2 * Math.PI / n;
+  const p = a * (1 - el.eccentricity ** 2);
+  const perigeeAlt = a * (1 - el.eccentricity) - EARTH_RADIUS;
+  const apogeeAlt = a * (1 + el.eccentricity) - EARTH_RADIUS;
+
+  // The orbit slowly turns because Earth is a bit squashed (the "J2" effect)
+  const nodeDrift = -1.5 * 1.08263e-3 * (EARTH_RADIUS / p) ** 2 * n * Math.cos(el.inclination * DEG);
+
+  return {
+    name: name,
+    satrec: satrec,
+    epoch: epoch,
+    orbit: {
+      ...el,
+      periodSeconds: periodSeconds,
+      semiMajorAxis: a,
+      perigeeAlt: perigeeAlt,
+      apogeeAlt: apogeeAlt,
+      type: getOrbitType(a, el.inclination, el.eccentricity, perigeeAlt),
+      // how far the path moves west on the map each orbit (7.292e-5 = Earth’s spin in rad/s)
+      shift: (7.2921159e-5 - nodeDrift) * periodSeconds / DEG
+    },
+    state: null,  // filled in by drawMap()
+    px: null,
+    py: null
+  };
+}
+
+function makeSatellite(name, line1, line2) {
+  // the TLE only has a 2 digit year, so 57-99 means 19xx and 00-56 means 20xx
+  const yearShort = Number(line1.slice(18, 20));
+  const year = yearShort < 57 ? 2000 + yearShort : 1900 + yearShort;
+  const dayOfYear = Number(line1.slice(20, 32));
+  const epoch = Date.UTC(year, 0, 1) + (dayOfYear - 1) * 86400000;
+
+  // the numbers sit at fixed spots in line 2
+  return buildSatellite(name, satellite.twoline2satrec(line1, line2), epoch, {
+    inclination: Number(line2.slice(8, 16)),
+    raan: Number(line2.slice(17, 25)),
+    eccentricity: Number("0." + line2.slice(26, 33)),
+    argPerigee: Number(line2.slice(34, 42)),
+    meanAnomaly: Number(line2.slice(43, 51)),
+    revsPerDay: Number(line2.slice(52, 63))
+  });
+}
+
+// OMM = the newer JSON format. TLEs can't hold satellite numbers of 100000
+// or more, so those satellites only come in this format.
+function makeSatelliteFromOMM(record) {
+  const name = record.OBJECT_NAME || "NORAD " + record.NORAD_CAT_ID;
+
+  // CelesTrak gives UTC times without a Z, and Date.parse is picky about long decimals
+  let epochText = String(record.EPOCH).replace(/(\.\d{3})\d*/, "$1");
+  if (!epochText.endsWith("Z")) epochText += "Z";
+
+  return buildSatellite(name, satellite.json2satrec(record), Date.parse(epochText), {
+    inclination: Number(record.INCLINATION),
+    raan: Number(record.RA_OF_ASC_NODE),
+    eccentricity: Number(record.ECCENTRICITY),
+    argPerigee: Number(record.ARG_OF_PERICENTER),
+    meanAnomaly: Number(record.MEAN_ANOMALY),
+    revsPerDay: Number(record.MEAN_MOTION)
+  });
+}
+
+// makes a fake TLE for the built-in examples (epoch = today)
+function makeDemoSatellite(index, name, inclination, raan, eccentricity, argPerigee, meanAnomaly, revsPerDay) {
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const dayOfYear = (now - Date.UTC(year, 0, 1)) / 86400000 + 1;
+  const pad = (number, width, decimals) => number.toFixed(decimals).padStart(width);
+
+  const line1 = `1 ${99001 + index}U 00000A   ${String(year % 100).padStart(2, "0")}${pad(dayOfYear, 12, 8).replace(/ /g, "0")}  .00000000  00000-0  00000-0 0  999`;
+  const line2 = `2 ${99001 + index} ${pad(inclination, 8, 4)} ${pad(raan, 8, 4)} ${String(Math.round(eccentricity * 1e7)).padStart(7, "0")} ${pad(argPerigee, 8, 4)} ${pad(meanAnomaly, 8, 4)} ${pad(revsPerDay, 11, 8)}00001`;
+
+  return makeSatellite(name, line1 + checksum(line1), line2 + checksum(line2));
+}
+
+
+// ============================================================
+// reading text (TLE or OMM) and loading satellites
+// ============================================================
+function parseTLEs(text) {
+  const lines = text.split(/\r?\n/).map(line => line.trim()); // pasted text is often indented
+  const found = [];
+  let bad = 0;
+
+  for (let i = 0; i < lines.length - 1; i++) {
+    // a TLE = a line starting with "1 " then a line starting with "2 "
+    if (!/^1 \d{5}/.test(lines[i]) || !/^2 \d{5}/.test(lines[i + 1])) continue;
+
+    const line1 = lines[i];
+    const line2 = lines[i + 1];
+    if (line1.length < 69 || line2.length < 69 ||
+        checksum(line1) != Number(line1[68]) || checksum(line2) != Number(line2[68])) {
+      bad++;
+      continue;
+    }
+
+    // the name is the line above, if there is one
+    let name = "NORAD " + line1.slice(2, 7);
+    if (i > 0 && !/^[12] /.test(lines[i - 1])) {
+      name = lines[i - 1].replace(/^0 /, "");
+    }
+
+    try {
+      found.push(makeSatellite(name, line1, line2));
+    } catch (error) {
+      bad++;
+    }
+  }
+  return { out: found, bad: bad };
+}
+
+function parseOMM(records) {
+  const found = [];
+  let bad = 0;
+  for (const record of records) {
+    try {
+      found.push(makeSatelliteFromOMM(record));
+    } catch (error) {
+      bad++;
+    }
+  }
+  return { out: found, bad: bad };
+}
+
+// text is either OMM JSON (starts with [ or {) or normal TLEs
+function parseAnyText(text) {
+  if (/^\s*[\[{]/.test(text)) {
+    try {
+      const data = JSON.parse(text);
+      return parseOMM(Array.isArray(data) ? data : [data]);
+    } catch (error) {
+      return { out: [], bad: 1 };
+    }
+  }
+  return parseTLEs(text);
+}
+
+function loadSatellites(result, source) {
+  const message = getEl("message");
+
+  if (result.out.length == 0) {
+    message.textContent = "Could not find any satellite data in that." +
+      (result.bad ? ` ${result.bad} entries had errors.` : "");
+    return;
+  }
+
+  const total = result.out.length;
+  sats = result.out.slice(0, MAX_SATS);
+  selectedIndex = 0;
+  simTime = Date.now();
+
+  // fill the drop-down
+  const dropdown = getEl("satellite-select");
+  dropdown.innerHTML = "";
+  sats.forEach((sat, i) => {
+    const option = document.createElement("option");
+    option.value = i;
+    option.textContent = sat.name;
+    dropdown.appendChild(option);
+  });
+
+  let text = `${sats.length} satellites loaded from ${source}`;
+  if (total > MAX_SATS) text += ` (only the first ${MAX_SATS} of ${total} are kept)`;
+  if (result.bad) text += `; ${result.bad} skipped because the data had errors`;
+  message.textContent = text + ".";
+
+  needsRedraw = true;
+}
+
+// Downloads satellite data. It tries 3 things in order:
+// CelesTrak as TLE, CelesTrak as OMM, and then a backup website.
+async function downloadSatellites(query) {
+  const base = "https://celestrak.org/NORAD/elements/gp.php?" + query + "&FORMAT=";
+  getEl("message").textContent = "Loading...";
+
+  // 1. normal TLE
+  try {
+    const response = await fetch(base + "TLE");
+    const text = await response.text();
+    if (response.ok && /^1 \d/m.test(text)) {
+      return loadSatellites(parseTLEs(text), "CelesTrak");
+    }
+  } catch (error) {
+    // didn't work, try the next one
+  }
+
+  // 2. OMM (needed for satellite numbers of 100000+, they have no TLE)
+  try {
+    if (satellite.json2satrec) {
+      const records = await (await fetch(base + "JSON")).json();
+      if (Array.isArray(records) && records.length > 0) {
+        return loadSatellites(parseOMM(records), "CelesTrak (OMM format)");
+      }
+    }
+  } catch (error) {
+    // didn't work, try the next one
+  }
+
+  // 3. backup website (only works for a number or a name, not for groups)
+  try {
+    const match = query.match(/^(CATNR|NAME)=(.*)$/);
+    if (!match) throw new Error("backup site can't do this kind of search");
+
+    const url = "https://tle.ivanstanojevic.eu/api/tle/" + (match[1] == "CATNR" ? match[2] : "?search=" + match[2]);
+    const json = await (await fetch(url)).json();
+    const members = json.member || [json];
+    const tleText = members.map(m => m.name + "\n" + m.line1 + "\n" + m.line2).join("\n");
+    loadSatellites(parseTLEs(tleText), "tle.ivanstanojevic.eu (backup)");
+  } catch (error) {
+    getEl("message").textContent = "Nothing found. Check the name or number and your internet, or paste TLE data from celestrak.org instead.";
+  }
+}
+
+
+// ============================================================
+// the maths: sun, position, path
+// ============================================================
+
+// direction of the sun at a given time (rough but good enough for us)
+function getSunDirection(timeMs) {
+  const days = timeMs / 86400000 + 2440587.5 - 2451545;       // days since the year 2000
+  const g = (357.529 + 0.98560028 * days) * DEG;
+  const L = (280.459 + 0.98564736 * days + 1.915 * Math.sin(g) + 0.02 * Math.sin(2 * g)) * DEG;
+  const tilt = (23.439 - 4e-7 * days) * DEG;                  // tilt of Earth’s axis
+  return [Math.cos(L), Math.cos(tilt) * Math.sin(L), Math.sin(tilt) * Math.sin(L)];
+}
+
+// true if the satellite can see the sun, false if Earth is in the way
+// TODO: the shadow is just a cylinder, a real one is slightly cone shaped
+function isSunlit(pos, timeMs) {
+  const sun = getSunDirection(timeMs);
+  const dot = pos.x * sun[0] + pos.y * sun[1] + pos.z * sun[2];
+  if (dot > 0) return true; // on the sunny side of Earth
+
+  // dark side: it is only lit if it is far enough away from the line through Earth
+  const sideways = Math.hypot(pos.x - dot * sun[0], pos.y - dot * sun[1], pos.z - dot * sun[2]);
+  return sideways > EARTH_RADIUS;
+}
+
+// where is the satellite at this time? (returns null if satellite.js fails)
+function getSatelliteState(sat, timeMs) {
+  const date = new Date(timeMs);
+  const result = satellite.propagate(sat.satrec, date);
+  if (!result || !result.position || !result.velocity) return null;
+
+  // gstime = how far Earth has turned, needed to go from "space" coordinates to lat/lon
+  const geo = satellite.eciToGeodetic(result.position, satellite.gstime(date));
+  const v = result.velocity;
+
+  return {
+    lat: geo.latitude / DEG,
+    lon: ((geo.longitude / DEG + 540) % 360 + 360) % 360 - 180, // keep it between -180 and 180
+    alt: geo.height,
+    speed: Math.hypot(v.x, v.y, v.z),
+    sunlit: isSunlit(result.position, timeMs)
+  };
+}
+
+// 120 points per orbit, from 1 orbit ago to 6 orbits ahead
+function calculatePath(sat, centerTime) {
+  const step = sat.orbit.periodSeconds / 120 * 1000;
+  const start = Math.floor(centerTime / step) * step;  // snapping to the step stops the line from wobbling
+  const points = [];
+
+  for (let k = -120; k <= 720; k++) {
+    const time = start + k * step;
+    const state = getSatelliteState(sat, time);
+    if (state) {
+      state.time = time;
+      points.push(state);
+    }
+  }
+  return points;
+}
+
+
+// ============================================================
+// the Earth picture: colors, night side and city lights
+// ============================================================
+const TEX_W = 720;   // the Earth picture is 720 x 360 pixels (half a degree each)
+const TEX_H = 360;
+// land colors in the same order as LAND_SHAPES: N. America, S. America, Eurasia, Africa, Australia, Greenland, Antarctica
+const LAND_COLORS = ["#3f9b5a", "#5aa84a", "#6aa84f", "#d2b36a", "#c9894a", "#eef4f8", "#f4f8fb"];
+
+// big cities as lat, lon, size (1 small - 3 huge). They make the lights.
+const CITIES = [
+  35.7,139.7,3, 28.6,77.2,3, 31.2,121.5,3, 19.1,72.9,3, 39.9,116.4,3, 30,31.2,3, 19.4,-99.1,3, -23.5,-46.6,3,
+  40.7,-74,3, 6.5,3.4,3, 55.8,37.6,3, 51.5,-0.1,3, 48.9,2.3,2, 41,29,2, 24.9,67,2, 23.8,90.4,3, 13.8,100.5,2,
+  -6.2,106.8,3, 14.6,121,2, 37.6,127,3, 34.7,135.5,2, 22.6,88.4,2, 13,77.6,2, 13.1,80.3,2, 17.4,78.5,2,
+  31.5,74.3,2, 35.7,51.4,2, 33.3,44.4,2, 24.7,46.7,2, -4.3,15.3,2, -26.2,28,2, -1.3,36.8,1, 9,38.7,1,
+  -34.6,-58.4,3, -12,-77,2, 4.7,-74.1,2, -33.5,-70.7,2, -22.9,-43.2,2, 34,-118.2,3, 41.9,-87.6,2, 29.8,-95.4,2,
+  43.7,-79.4,2, 25.8,-80.2,2, 37.8,-122.4,2, 32.8,-96.8,1, 38.9,-77,1, 40.4,-3.7,2, 52.5,13.4,2, 41.9,12.5,2,
+  50.4,30.5,1, -33.9,151.2,2, -37.8,145,1, 22.3,114.2,3, 23.1,113.3,3, 29.6,106.5,2, 30.7,104.1,2, 30.6,114.3,2,
+  1.35,103.8,2, 10.8,106.7,2, 21,105.8,1, 25,121.5,2, 35.2,136.9,1, 34.5,69.2,1, 33.6,-7.6,1, 36.7,3,1,
+  5.6,-0.2,1, -6.8,39.3,1, -8.8,13.2,1, 15.6,32.5,1, 25.2,55.3,2, 32.1,34.8,1, 38,23.7,1, 52.2,21,1,
+  59.3,18,1, 60.2,25,1, 18.5,73.9,1, 23,72.6,1, 20.7,-103.3,1, 10.5,-66.9,1, 49.3,-123.1,1, 33.7,-84.4,1,
+  33.4,-112,1, 55,82.9,1, 41.3,69.3,1, 43.2,76.9,1, -36.8,174.8,1, -32,115.9,1, 59.9,30.3,1, 45.5,-73.6,1,
+  39.7,-105,1, 47.6,-122.3,1
+];
+
+let dayPixels = null;    // the Earth in daylight (RGBA numbers)
+let lightPixels = null;  // the city lights (only the red number is used)
+// sin / cos of every row (latitude) and column (longitude), so we don't repeat them for every pixel
+const rowSin = new Float32Array(TEX_H), rowCos = new Float32Array(TEX_H);
+const colSin = new Float32Array(TEX_W), colCos = new Float32Array(TEX_W);
+
+const earthCanvas = document.createElement("canvas");   // the finished flat map picture
+earthCanvas.width = TEX_W;
+earthCanvas.height = TEX_H;
+const earthImage = earthCanvas.getContext("2d").createImageData(TEX_W, TEX_H);
+let lastEarthUpdate = -1e9;
+
+// draws the daylight Earth and the city lights once, when the page starts
+function buildTextures() {
+  for (let y = 0; y < TEX_H; y++) {
+    const lat = (90 - (y + 0.5) / TEX_H * 180) * DEG;
+    rowSin[y] = Math.sin(lat);
+    rowCos[y] = Math.cos(lat);
+  }
+  for (let x = 0; x < TEX_W; x++) {
+    const lon = ((x + 0.5) / TEX_W * 360 - 180) * DEG;
+    colSin[x] = Math.sin(lon);
+    colCos[x] = Math.cos(lon);
+  }
+
+  // 1. daylight: blue ocean (darker near the poles) and green / sandy / white land
+  const dayCanvas = document.createElement("canvas");
+  dayCanvas.width = TEX_W;
+  dayCanvas.height = TEX_H;
+  const c = dayCanvas.getContext("2d");
+  const sea = c.createLinearGradient(0, 0, 0, TEX_H);
+  sea.addColorStop(0, "#1b4f8c");
+  sea.addColorStop(0.5, "#2a7fc1");
+  sea.addColorStop(1, "#1b4f8c");
+  c.fillStyle = sea;
+  c.fillRect(0, 0, TEX_W, TEX_H);
+
+  c.lineJoin = "round";
+  c.lineWidth = 1.5;
+  c.strokeStyle = "rgba(255, 255, 255, 0.35)";   // a light line along the coast
+  LAND_SHAPES.forEach((shape, n) => {
+    c.fillStyle = LAND_COLORS[n < LAND_COLORS.length ? n : 0];
+    c.beginPath();
+    for (let i = 0; i < shape.length; i += 2) {
+      const x = lonToX(shape[i], TEX_W);
+      const y = latToY(shape[i + 1], TEX_H);
+      if (i == 0) c.moveTo(x, y);
+      else c.lineTo(x, y);
+    }
+    c.closePath();
+    c.fill();
+    c.stroke();
+  });
+  dayPixels = c.getImageData(0, 0, TEX_W, TEX_H).data;
+
+  // 2. city lights: a glow on every city plus little dots around it for the suburbs.
+  // The "random" numbers always come out the same, so the lights look the same every visit.
+  const lightCanvas = document.createElement("canvas");
+  lightCanvas.width = TEX_W;
+  lightCanvas.height = TEX_H;
+  const l = lightCanvas.getContext("2d");
+  l.fillStyle = "#000";
+  l.fillRect(0, 0, TEX_W, TEX_H);
+  l.globalCompositeOperation = "lighter";   // overlapping lights add up, like real cities
+  let seed = 7;
+  const random = () => { seed = seed * 16807 % 2147483647; return seed / 2147483647; };
+
+  for (let i = 0; i < CITIES.length; i += 3) {
+    const x = lonToX(CITIES[i + 1], TEX_W);
+    const y = latToY(CITIES[i], TEX_H);
+    const size = CITIES[i + 2];
+    const glow = l.createRadialGradient(x, y, 0, x, y, 3 + size * 3);
+    glow.addColorStop(0, "rgba(255, 255, 255, 0.9)");
+    glow.addColorStop(1, "rgba(255, 255, 255, 0)");
+    l.fillStyle = glow;
+    l.fillRect(x - 12, y - 12, 24, 24);
+
+    l.fillStyle = "rgba(255, 255, 255, 0.55)";
+    for (let k = 0; k < size * 14; k++) {
+      const angle = random() * Math.PI * 2;
+      const distance = random() ** 1.5 * size * 7;
+      l.fillRect(x + Math.cos(angle) * distance * 1.4, y + Math.sin(angle) * distance, 1, 1);
+    }
+  }
+  lightPixels = l.getImageData(0, 0, TEX_W, TEX_H).data;
+}
+
+// Works out the color of one pixel of the Earth.
+// i = where the pixel is in the pictures, cosSun = how high the sun is there
+// (1 = straight overhead, 0 = on the horizon, below 0 = night), the result goes into out[o..o+3]
+function shadePixel(i, cosSun, out, o) {
+  let night = (0.08 - cosSun) / 0.2;                 // 0 = day, 1 = night, in between = twilight
+  night = night < 0 ? 0 : night > 1 ? 1 : night;
+  const dim = 1 - 0.85 * night;                      // how much of the daylight color is left
+  const glow = lightPixels[i] / 255 * night;         // city lights only show at night
+  const dusk = night * (1 - night) * 4;              // biggest in the middle of twilight: a bit of orange
+
+  out[o]     = dayPixels[i]     * dim + 8  * night + 255 * glow + 50 * dusk;
+  out[o + 1] = dayPixels[i + 1] * dim + 14 * night + 200 * glow + 22 * dusk;
+  out[o + 2] = dayPixels[i + 2] * dim + 40 * night + 100 * glow;
+  out[o + 3] = 255;
+}
+
+// the point on Earth where the sun is straight overhead (in radians)
+function getSubsolarPoint(timeMs) {
+  const sun = getSunDirection(timeMs);
+  return {
+    lat: Math.asin(sun[2]),
+    lon: Math.atan2(sun[1], sun[0]) - satellite.gstime(new Date(timeMs))
+  };
+}
+
+// colors the whole flat map for the current time
+function updateEarthPicture() {
+  const sun = getSubsolarPoint(simTime);
+  const sinD = Math.sin(sun.lat), cosD = Math.cos(sun.lat);
+  const cosL = Math.cos(sun.lon), sinL = Math.sin(sun.lon);
+  const data = earthImage.data;
+  let o = 0;
+  for (let y = 0; y < TEX_H; y++) {
+    for (let x = 0; x < TEX_W; x++) {
+      // cos(angle between this spot and the sun)
+      const cosSun = rowSin[y] * sinD + rowCos[y] * cosD * (colCos[x] * cosL + colSin[x] * sinL);
+      shadePixel(o, cosSun, data, o);
+      o += 4;
+    }
+  }
+  earthCanvas.getContext("2d").putImageData(earthImage, 0, 0);
+}
+
+
+// ============================================================
+// drawing the map
+// ============================================================
+function drawGrid(ctx, w, h, dpr) {
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+  ctx.lineWidth = dpr;
+  ctx.beginPath();
+  for (let lon = -150; lon < 180; lon += 30) {
+    ctx.moveTo(lonToX(lon, w), 0);
+    ctx.lineTo(lonToX(lon, w), h);
+  }
+  for (let lat = -60; lat <= 60; lat += 30) {
+    ctx.moveTo(0, latToY(lat, h));
+    ctx.lineTo(w, latToY(lat, h));
+  }
+  ctx.stroke();
+}
+
+// the orange / blue line showing where the satellite goes
+function drawTrack(ctx, w, h, dpr, sat) {
+  const lastTime = simTime + orbitsToShow * sat.orbit.periodSeconds * 1000;
+  const sunColor = colors.sun;
+  const shadowColor = colors.ecl;
+  ctx.lineWidth = 1.8 * dpr;
+
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1];
+    const b = path[i];
+    if (b.time > lastTime) continue;              // too far in the future
+    if (Math.abs(a.lon - b.lon) > 180) continue;  // it wrapped around the map edge, a line here would cross the whole map
+
+    ctx.globalAlpha = b.time < simTime ? 0.3 : 0.95;  // faint = past
+    ctx.strokeStyle = b.sunlit ? sunColor : shadowColor;
+    ctx.beginPath();
+    ctx.moveTo(lonToX(a.lon, w), latToY(a.lat, h));
+    ctx.lineTo(lonToX(b.lon, w), latToY(b.lat, h));
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// The dashed circle = everything the satellite can see up to the horizon.
+// We walk around the circle in 5 degree steps (spherical trigonometry).
+function drawFootprint(ctx, w, h, dpr, state) {
+  const rho = Math.acos(EARTH_RADIUS / (EARTH_RADIUS + state.alt)); // angle from the spot below it to the horizon
+  const lat0 = state.lat * DEG;
+
+  ctx.strokeStyle = colors.ink;
+  ctx.lineWidth = dpr;
+  ctx.setLineDash([4 * dpr, 4 * dpr]);
+  ctx.beginPath();
+
+  let previousLon = null;
+  for (let angle = 0; angle <= 360; angle += 5) {
+    const z = angle * DEG;
+    const lat = Math.asin(Math.sin(lat0) * Math.cos(rho) + Math.cos(lat0) * Math.sin(rho) * Math.cos(z));
+    const lon = state.lon + Math.atan2(
+      Math.sin(z) * Math.sin(rho) * Math.cos(lat0),
+      Math.cos(rho) - Math.sin(lat0) * Math.sin(lat)) / DEG;
+    const wrappedLon = ((lon + 540) % 360) - 180;
+
+    // start a new line if the circle goes off one side of the map
+    if (previousLon === null || Math.abs(wrappedLon - previousLon) > 180) {
+      ctx.moveTo(lonToX(wrappedLon, w), latToY(lat / DEG, h));
+    } else {
+      ctx.lineTo(lonToX(wrappedLon, w), latToY(lat / DEG, h));
+    }
+    previousLon = wrappedLon;
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawMap(now) {
+  loadColors();
+  const canvas = getEl("map-canvas");
+  const dpr = resizeCanvas(canvas);
+  const w = canvas.width;
+  const h = canvas.height;
+  const ctx = canvas.getContext("2d");
+  const selected = sats[selectedIndex];
+
+  // the Earth picture is redrawn 4 times a second, so the night side keeps moving
+  if (needsRedraw || now - lastEarthUpdate > 250) {
+    updateEarthPicture();
+    lastEarthUpdate = now;
+  }
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(earthCanvas, 0, 0, w, h);
+  drawGrid(ctx, w, h, dpr);
+  drawTrack(ctx, w, h, dpr, selected);
+
+  // Find every satellite, the ones that aren't selected get a grey dot.
+  // The selected one is updated every frame but the others only 4 times a
+  // second, because with 400 satellites phones were too slow otherwise.
+  const updateOthers = needsRedraw || now - lastOthersUpdate > 250;
+  if (updateOthers) lastOthersUpdate = now;
+
+  sats.forEach((sat, i) => {
+    if (i == selectedIndex || updateOthers) sat.state = getSatelliteState(sat, simTime);
+    sat.px = sat.state ? lonToX(sat.state.lon, w) : null;
+    sat.py = sat.state ? latToY(sat.state.lat, h) : null;
+
+    if (sat.state && i != selectedIndex) {
+      ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+      ctx.beginPath();
+      ctx.arc(sat.px, sat.py, 2.5 * dpr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+
+  if (!selected.state) return;
+  drawFootprint(ctx, w, h, dpr, selected.state);
+
+  // the selected one: bigger circle with its name next to it
+  ctx.fillStyle = colors.bg;
+  ctx.strokeStyle = colors.ink;
+  ctx.lineWidth = 2 * dpr;
+  ctx.beginPath();
+  ctx.arc(selected.px, selected.py, 5 * dpr, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.font = 11 * dpr + "px system-ui, sans-serif";
+  ctx.lineWidth = 3 * dpr;                        // dark outline so the name can be read on any color
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.7)";
+  ctx.strokeText(selected.name, selected.px + 9 * dpr, selected.py - 8 * dpr);
+  ctx.fillStyle = colors.ink;
+  ctx.fillText(selected.name, selected.px + 9 * dpr, selected.py - 8 * dpr);
+}
+
+
+// ============================================================
+// the 3D globe
+// ============================================================
+// The Earth is drawn pixel by pixel into a small picture (380 x 380) and then stretched
+// to fit the canvas. The path and the satellite are drawn on top as lines.
+const GLOBE_SIZE = 380;
+const globeBuffer = document.createElement("canvas");
+globeBuffer.width = GLOBE_SIZE;
+globeBuffer.height = GLOBE_SIZE;
+const globeImage = globeBuffer.getContext("2d").createImageData(GLOBE_SIZE, GLOBE_SIZE);
+
+// what the camera looks at (radians), how far zoomed in, and how big the orbit is
+const globeView = { lat: 20 * DEG, lon: 0, zoom: 1, fit: 1.15 };
+let globeAxes = null;         // the camera directions used for the last picture
+let globeDirty = true;        // true when the user moved the globe
+let lastGlobeUpdate = -1e9;
+let globeFitFor = null;       // which satellite the zoom was fitted for
+
+// The 3 directions of the camera: C = pointing at the camera, E = to the right, N = up.
+// They are in "Earth coordinates" (x through lon 0, y through lon 90 east, z = north pole).
+function getGlobeAxes() {
+  const sinLat = Math.sin(globeView.lat), cosLat = Math.cos(globeView.lat);
+  const sinLon = Math.sin(globeView.lon), cosLon = Math.cos(globeView.lon);
+  return {
+    C: [cosLat * cosLon, cosLat * sinLon, sinLat],
+    E: [-sinLon, cosLon, 0],
+    N: [-sinLat * cosLon, -sinLat * sinLon, cosLat]
+  };
+}
+
+// lat / lon / height -> a spot on the globe canvas.
+// hidden = true when the Earth is in the way (we are looking at the other side)
+function projectGlobe(lat, lon, alt, axes, cx, cy, radius) {
+  const r = 1 + alt / EARTH_RADIUS;      // 1 = Earth’s surface, 2 = one Earth radius above it
+  const la = lat * DEG, lo = lon * DEG;
+  const x = r * Math.cos(la) * Math.cos(lo);
+  const y = r * Math.cos(la) * Math.sin(lo);
+  const z = r * Math.sin(la);
+  const depth = x * axes.C[0] + y * axes.C[1] + z * axes.C[2];
+  const right = x * axes.E[0] + y * axes.E[1] + z * axes.E[2];
+  const up = x * axes.N[0] + y * axes.N[1] + z * axes.N[2];
+  return {
+    x: cx + right * radius,
+    y: cy - up * radius,
+    hidden: depth < 0 && right * right + up * up < 1
+  };
+}
+
+// draws the round Earth into globeBuffer. radius = size of the Earth in buffer pixels
+function renderGlobeBall(axes, radius) {
+  const S = GLOBE_SIZE, mid = S / 2, data = globeImage.data;
+  const sun = getSubsolarPoint(simTime);
+  const sx = Math.cos(sun.lat) * Math.cos(sun.lon);   // direction of the sun
+  const sy = Math.cos(sun.lat) * Math.sin(sun.lon);
+  const sz = Math.sin(sun.lat);
+  const C = axes.C, E = axes.E, N = axes.N;
+
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const o = (y * S + x) * 4;
+      const px = (x + 0.5 - mid) / radius;     // position on the Earth’s disc, -1 to 1
+      const py = (mid - y - 0.5) / radius;
+      const r2 = px * px + py * py;
+      if (r2 >= 1) { data[o + 3] = 0; continue; }   // outside the Earth: see-through
+
+      // which spot on Earth is this pixel showing?
+      const pz = Math.sqrt(1 - r2);
+      const X = pz * C[0] + px * E[0] + py * N[0];
+      const Y = pz * C[1] + px * E[1] + py * N[1];
+      const Z = pz * C[2] + px * E[2] + py * N[2];
+      const lon = Math.atan2(Y, X) / DEG;
+      const lat = Math.asin(Math.max(-1, Math.min(1, Z))) / DEG;
+      const tx = Math.min(TEX_W - 1, ((lon + 180) / 360 * TEX_W) | 0);
+      const ty = Math.min(TEX_H - 1, ((90 - lat) / 180 * TEX_H) | 0);
+
+      shadePixel((ty * TEX_W + tx) * 4, X * sx + Y * sy + Z * sz, data, o);
+    }
+  }
+  globeBuffer.getContext("2d").putImageData(globeImage, 0, 0);
+}
+
+// the dashed circle on the ground, same maths as drawFootprint()
+function drawGlobeFootprint(ctx, dpr, state, axes, cx, cy, radius) {
+  const rho = Math.acos(EARTH_RADIUS / (EARTH_RADIUS + state.alt));
+  const lat0 = state.lat * DEG;
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.75)";
+  ctx.lineWidth = dpr;
+  ctx.setLineDash([4 * dpr, 4 * dpr]);
+
+  let previous = null;
+  for (let angle = 0; angle <= 360; angle += 5) {
+    const z = angle * DEG;
+    const lat = Math.asin(Math.sin(lat0) * Math.cos(rho) + Math.cos(lat0) * Math.sin(rho) * Math.cos(z));
+    const lon = state.lon + Math.atan2(
+      Math.sin(z) * Math.sin(rho) * Math.cos(lat0),
+      Math.cos(rho) - Math.sin(lat0) * Math.sin(lat)) / DEG;
+    const point = projectGlobe(lat / DEG, lon, 0, axes, cx, cy, radius);
+    if (previous && !previous.hidden && !point.hidden) {
+      ctx.beginPath();
+      ctx.moveTo(previous.x, previous.y);
+      ctx.lineTo(point.x, point.y);
+      ctx.stroke();
+    }
+    previous = point;
+  }
+  ctx.setLineDash([]);
+}
+
+function drawGlobe(now) {
+  const canvas = getEl("globe-canvas");
+  const dpr = resizeCanvas(canvas);
+  const w = canvas.width, h = canvas.height;
+  const ctx = canvas.getContext("2d");
+  const sat = sats[selectedIndex];
+  const side = Math.min(w, h);
+
+  // new satellite picked: zoom so its whole orbit fits on screen
+  if (globeFitFor !== sat) {
+    globeFitFor = sat;
+    globeView.fit = Math.max(1.15, 1 + sat.orbit.apogeeAlt / EARTH_RADIUS);
+    globeView.zoom = 1;
+    globeDirty = true;
+  }
+
+  // The Earth is only redrawn about 12 times a second (it is the slow part).
+  // The path and the satellite use the same camera as the last Earth picture so they always line up.
+  if (globeDirty || needsRedraw || now - lastGlobeUpdate > 80) {
+    if (getEl("follow-box").checked && sat.state) {
+      globeView.lat = sat.state.lat * DEG;
+      globeView.lon = sat.state.lon * DEG;
+    }
+    globeAxes = getGlobeAxes();
+    renderGlobeBall(globeAxes, GLOBE_SIZE * 0.45 * globeView.zoom / globeView.fit);
+    lastGlobeUpdate = now;
+    globeDirty = false;
+  }
+
+  const cx = w / 2, cy = h / 2;
+  const radius = side * 0.45 * globeView.zoom / globeView.fit;   // Earth’s size in canvas pixels
+
+  ctx.fillStyle = "#070c18";
+  ctx.fillRect(0, 0, w, h);
+
+  // a thin blue glow around the Earth, like the atmosphere seen from space
+  const halo = ctx.createRadialGradient(cx, cy, radius * 0.97, cx, cy, radius * 1.1);
+  halo.addColorStop(0, "rgba(110, 180, 255, 0.5)");
+  halo.addColorStop(1, "rgba(110, 180, 255, 0)");
+  ctx.fillStyle = halo;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius * 1.1, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(globeBuffer, cx - side / 2, cy - side / 2, side, side);
+
+  // the path: gold in sunlight, violet in shadow, faint where it has already been
+  const lastTime = simTime + orbitsToShow * sat.orbit.periodSeconds * 1000;
+  ctx.lineWidth = 2.2 * dpr;
+  let previous = null;
+  for (const point of path) {
+    if (point.time > lastTime) break;
+    const spot = projectGlobe(point.lat, point.lon, point.alt, globeAxes, cx, cy, radius);
+    if (previous && !previous.hidden && !spot.hidden) {
+      ctx.globalAlpha = point.time < simTime ? 0.3 : 1;
+      ctx.strokeStyle = point.sunlit ? colors.sun : colors.ecl;
+      ctx.beginPath();
+      ctx.moveTo(previous.x, previous.y);
+      ctx.lineTo(spot.x, spot.y);
+      ctx.stroke();
+    }
+    previous = spot;
+  }
+  ctx.globalAlpha = 1;
+
+  // the other satellites: small white dots
+  ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
+  for (const other of sats) {
+    if (other === sat || !other.state) continue;
+    const spot = projectGlobe(other.state.lat, other.state.lon, other.state.alt, globeAxes, cx, cy, radius);
+    if (spot.hidden) continue;
+    ctx.beginPath();
+    ctx.arc(spot.x, spot.y, 2 * dpr, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // the selected satellite, with a line straight down to the ground below it
+  const state = sat.state;
+  if (!state) return;
+  drawGlobeFootprint(ctx, dpr, state, globeAxes, cx, cy, radius);
+  const spot = projectGlobe(state.lat, state.lon, state.alt, globeAxes, cx, cy, radius);
+  const ground = projectGlobe(state.lat, state.lon, 0, globeAxes, cx, cy, radius);
+  if (spot.hidden) return;
+
+  if (!ground.hidden) {
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.6)";
+    ctx.lineWidth = dpr;
+    ctx.beginPath();
+    ctx.moveTo(spot.x, spot.y);
+    ctx.lineTo(ground.x, ground.y);
+    ctx.stroke();
+  }
+  ctx.fillStyle = colors.bg;
+  ctx.strokeStyle = colors.ink;
+  ctx.lineWidth = 2 * dpr;
+  ctx.beginPath();
+  ctx.arc(spot.x, spot.y, 5 * dpr, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.font = 12 * dpr + "px system-ui, sans-serif";
+  ctx.lineWidth = 3 * dpr;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.8)";
+  ctx.strokeText(sat.name, spot.x + 9 * dpr, spot.y - 8 * dpr);
+  ctx.fillStyle = colors.ink;
+  ctx.fillText(sat.name, spot.x + 9 * dpr, spot.y - 8 * dpr);
+}
+
+
+// ============================================================
+// the info panels on the right
+// ============================================================
+
+// rows = list of [label, value, small explanation (optional)]
+function makeRows(rows) {
+  return rows.map(([label, value, hint]) =>
+    `<dt>${label}${hint ? `<small>${hint}</small>` : ""}</dt><dd>${value}</dd>`
+  ).join("");
+}
+
+function updateLivePanel() {
+  const state = sats[selectedIndex].state;
+
+  let clockText = formatDateTime(simTime, 19) + " UTC";
+  if (Math.abs(simTime - Date.now()) >= 2000) clockText += " (simulated time)";
+  getEl("clock").textContent = clockText;
+
+  if (!state) {
+    getEl("live-info").innerHTML = makeRows([["Status", "Could not calculate position"]]);
+    return;
+  }
+
+  const seeRadius = EARTH_RADIUS * Math.acos(EARTH_RADIUS / (EARTH_RADIUS + state.alt));
+  const sunText = state.sunlit ? '<span class="sun">In sunlight</span>' : '<span class="ecl">In Earth’s shadow</span>';
+
+  getEl("live-info").innerHTML = makeRows([
+    ["Latitude", state.lat.toFixed(3) + "°", "north (+) or south (-)"],
+    ["Longitude", state.lon.toFixed(3) + "°", "east (+) or west (-)"],
+    ["Height above Earth", state.alt.toFixed(1) + " km"],
+    ["Speed", state.speed.toFixed(3) + " km/s"],
+    ["Area it can see", "radius " + seeRadius.toFixed(0) + " km", "the dashed circle on the map"],
+    ["Sun or shadow", sunText]
+  ]);
+}
+
+function showOrbitPanel(orbit) {
+  getEl("orbit-info").innerHTML = makeRows([
+    ["Orbit type", orbit.type],
+    ["Tilt", orbit.inclination.toFixed(1) + "°", "0° = above the equator, 90° = above the poles"],
+    ["Twist (RAAN)", orbit.raan.toFixed(1) + "°", "which way the tilted orbit is turned around Earth"],
+    ["How oval", orbit.eccentricity.toFixed(4), "0 = a perfect circle"],
+    ["Lowest point position", orbit.argPerigee.toFixed(1) + "°", "where along the orbit it is closest to Earth"],
+    ["Spot on its orbit", orbit.meanAnomaly.toFixed(1) + "°", "where it was on the orbit when the data was made"],
+    ["Orbits per day", orbit.revsPerDay.toFixed(2)],
+    ["Time for one orbit", (orbit.periodSeconds / 60).toFixed(1) + " min"],
+    ["Distance from Earth’s center", orbit.semiMajorAxis.toFixed(0) + " km", "on average"],
+    ["Lowest height", orbit.perigeeAlt.toFixed(0) + " km"],
+    ["Highest height", orbit.apogeeAlt.toFixed(0) + " km"]
+  ]);
+}
+
+// nextOrbit = the path points for the next 1 orbit
+function showGroundPathPanel(orbit, nextOrbit) {
+  // count the sunlit points and the longest run of points in shadow
+  let sunlitCount = 0;
+  let shadowRun = 0;
+  let longestShadow = 0;
+  for (const point of nextOrbit) {
+    if (point.sunlit) {
+      sunlitCount++;
+      shadowRun = 0;
+    } else {
+      shadowRun++;
+      longestShadow = Math.max(longestShadow, shadowRun);
+    }
+  }
+
+  const direction = orbit.shift > 0 ? "west" : "east";
+  const sunlitText = nextOrbit.length ? (100 * sunlitCount / nextOrbit.length).toFixed(0) + " %" : "-";
+  // points are 1/120 of an orbit apart, so this turns a point count into minutes
+  const shadowText = longestShadow ? (longestShadow * orbit.periodSeconds / 120 / 60).toFixed(1) + " min" : "none";
+
+  getEl("ground-path-info").innerHTML = makeRows([
+    ["Path shift each lap", Math.abs(orbit.shift).toFixed(1) + "° " + direction, "Earth turns underneath, so each lap is drawn this far over on the map"],
+    ["In sunlight (next lap)", sunlitText],
+    ["Longest time in shadow", shadowText]
+  ]);
+}
+
+// finds the places where the path goes from south to north over the equator
+function showEquatorTable() {
+  const crossings = [];
+
+  for (let i = 1; i < path.length && crossings.length < 6; i++) {
+    const a = path[i - 1];
+    const b = path[i];
+    if (Math.abs(a.lon - b.lon) > 180) continue;   // jumped across the map edge
+    if (!(a.lat < 0 && b.lat >= 0)) continue;      // not going south -> north
+
+    // the exact crossing is somewhere between a and b, so we guess it with a straight line
+    const fraction = -a.lat / (b.lat - a.lat);
+    const time = a.time + fraction * (b.time - a.time);
+    if (time < simTime) continue;                  // already happened
+
+    crossings.push({ time: time, lon: a.lon + fraction * (b.lon - a.lon) });
+  }
+
+  let html = "<tr><th>Time (UTC)</th><th>From now</th><th>Longitude</th></tr>";
+  if (crossings.length == 0) {
+    html += "<tr><td colspan=3>none in the next 6 orbits</td></tr>";
+  }
+  for (const c of crossings) {
+    html += `<tr><td>${formatDateTime(c.time, 16).slice(5)}</td>` +
+            `<td>${((c.time - simTime) / 60000).toFixed(0)} min</td>` +
+            `<td>${c.lon.toFixed(1)}°</td></tr>`;
+  }
+  getEl("equator-table").innerHTML = html;
+}
+
+// the older the TLE, the less we can trust the position
+function showDataAgePanel(sat) {
+  const ageDays = (simTime - sat.epoch) / 86400000;
+  let advice = "The data is fresh enough.";
+  let cssClass = "";
+
+  if (ageDays < -1) {
+    advice = "The clock is set to before the data was made, so the result is not accurate.";
+    cssClass = "bad";
+  } else if (ageDays > 30) {
+    advice = "The data is old (over 30 days). Positions could be off by a lot. Load newer data.";
+    cssClass = "bad";
+  } else if (ageDays > 14) {
+    advice = "The data is getting old. OK for a rough path, not for exact times.";
+    cssClass = "sun";
+  }
+
+  getEl("data-age-info").innerHTML = makeRows([
+    ["Data was made on", formatDateTime(sat.epoch, 16) + " UTC"],
+    ["How old the data is", ageDays.toFixed(1) + " days", "measured at the time shown on the clock"]
+  ]) + `<p class="${cssClass}">${advice}</p>`;
+}
+
+// simple line chart of one value ("alt" or "speed") from chartData
+function drawChart(canvasId, key, decimals) {
+  const canvas = getEl(canvasId);
+  const dpr = resizeCanvas(canvas);
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width;
+  const h = canvas.height;
+  const leftSpace = 46 * dpr;  // room for the numbers on the left
+  const pad = 12 * dpr;
+
+  ctx.clearRect(0, 0, w, h);
+  const values = chartData.map(point => point[key]);
+  if (values.length < 2) return;
+
+  const lowest = Math.min(...values);
+  let highest = Math.max(...values);
+  if (highest - lowest < 1e-6) highest = lowest + 1; // flat line, don't divide by 0
+
+  ctx.strokeStyle = colors.ink;
+  ctx.lineWidth = 1.5 * dpr;
+  ctx.beginPath();
+  values.forEach((value, i) => {
+    const x = leftSpace + i / (values.length - 1) * (w - leftSpace - 4 * dpr);
+    const y = pad + (1 - (value - lowest) / (highest - lowest)) * (h - 2 * pad);
+    if (i == 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // highest and lowest number on the left
+  ctx.fillStyle = colors.dim;
+  ctx.font = 10 * dpr + "px system-ui, sans-serif";
+  ctx.fillText(highest.toFixed(decimals), 3 * dpr, pad + 8 * dpr);
+  ctx.fillText(lowest.toFixed(decimals), 3 * dpr, h - pad);
+}
+
+function updateInfoPanels() {
+  const sat = sats[selectedIndex];
+  const periodMs = sat.orbit.periodSeconds * 1000;
+
+  const nextOrbit = path.filter(p => p.time >= simTime && p.time <= simTime + periodMs);
+  chartData = path.filter(p => p.time >= simTime && p.time <= simTime + orbitsToShow * periodMs);
+
+  showOrbitPanel(sat.orbit);
+  showGroundPathPanel(sat.orbit, nextOrbit);
+  showEquatorTable();
+  showDataAgePanel(sat);
+  drawChart("altitude-chart", "alt", 0);
+  drawChart("speed-chart", "speed", 2);
+}
+
+
+// ============================================================
+// main loop (runs every frame)
+// ============================================================
+function animationLoop(now) {
+  let timePassed = now - lastFrame;
+  lastFrame = now;
+  // If the phone was in the background timePassed is huge. At normal speed that
+  // keeps the clock correct, but at fast speeds it would jump ahead, so cap it.
+  if (timePassed > 1000 && speed > 1) timePassed = 1000;
+  if (!paused) simTime += timePassed * speed;
+
+  // the path is expensive to calculate so only 4 times a second (or when something changed)
+  if (needsRedraw || now - lastPathUpdate > 250) {
+    path = calculatePath(sats[selectedIndex], simTime);
+    lastPathUpdate = now;
+  }
+
+  drawMap(now);
+  drawGlobe(now);
+
+  // text panels: live info 5 times a second, the big ones about once a second
+  const panelDue = now - lastPanelUpdate > 200;
+  if (needsRedraw || panelDue) updateLivePanel();
+  if (needsRedraw || (panelDue && now % 1000 < 250)) updateInfoPanels();
+  if (panelDue) lastPanelUpdate = now;
+
+  needsRedraw = false;
+  requestAnimationFrame(animationLoop);
+}
+
+
+// ============================================================
+// buttons and inputs
+// ============================================================
+getEl("pause-button").onclick = event => {
+  paused = !paused;
+  event.target.textContent = paused ? "Play" : "Pause";
+  event.target.setAttribute("aria-pressed", paused);
+};
+
+getEl("speed-select").onchange = event => {
+  speed = Number(event.target.value);
+};
+
+getEl("orbits-select").onchange = event => {
+  orbitsToShow = Number(event.target.value);
+  needsRedraw = true;
+};
+
+getEl("now-button").onclick = () => {
+  simTime = Date.now();
+  speed = 1;
+  getEl("speed-select").value = 1;
+  needsRedraw = true;
+};
+
+getEl("epoch-button").onclick = () => {
+  simTime = sats[selectedIndex].epoch;
+  needsRedraw = true;
+};
+
+getEl("satellite-select").onchange = event => {
+  selectedIndex = Number(event.target.value);
+  needsRedraw = true;
+};
+
+// clicking the map picks the closest satellite
+getEl("map-canvas").onclick = event => {
+  const canvas = event.target;
+  const rect = canvas.getBoundingClientRect();
+  const scale = canvas.width / rect.width;
+  const clickX = (event.clientX - rect.left) * scale;
+  const clickY = (event.clientY - rect.top) * scale;
+
+  let closest = -1;
+  // how close you have to tap (in CSS pixels), fingers are less exact than a mouse
+  const tapRadius = matchMedia("(pointer: coarse)").matches ? 24 : 14;
+  let closestDistance = tapRadius * (devicePixelRatio || 1);
+
+  sats.forEach((sat, i) => {
+    if (sat.px == null) return;
+    const distance = Math.hypot(sat.px - clickX, sat.py - clickY);
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      closest = i;
+    }
+  });
+
+  if (closest >= 0) {
+    selectedIndex = closest;
+    getEl("satellite-select").value = closest;
+    needsRedraw = true;
+  }
+};
+
+// the big box: pasted TLE / OMM JSON, a NORAD number, a launch ID or a name
+getEl("search-button").onclick = () => {
+  const text = getEl("search-box").value.trim();
+  if (text == "") return;
+
+  if (/^\s*1 \d{5}/m.test(text) || /^\s*[\[{]/.test(text)) {
+    loadSatellites(parseAnyText(text), "pasted data");     // pasted data, no internet needed
+  } else if (/^\d{1,9}$/.test(text)) {
+    downloadSatellites("CATNR=" + text);                   // only digits = NORAD number
+  } else if (/^\d{4}-\d{3}[A-Za-z]{0,3}$/.test(text)) {
+    downloadSatellites("INTDES=" + text.toUpperCase());    // like 1998-067A = launch ID
+  } else {
+    downloadSatellites("NAME=" + encodeURIComponent(text)); // anything else = a name
+  }
+};
+
+getEl("file-input").onchange = async event => {
+  const file = event.target.files[0];
+  if (!file) return;
+  loadSatellites(parseAnyText(await file.text()), "file");
+  event.target.value = ""; // so picking the same file again still works
+};
+
+getEl("load-group-button").onclick = () => {
+  downloadSatellites("GROUP=" + getEl("group-select").value);
+};
+
+// ---- the globe: drag to turn, scroll or pinch to zoom ----
+const globeCanvas = getEl("globe-canvas");
+const touches = new Map();   // fingers (or the mouse) that are pressing on the globe
+let pinchDistance = 0;
+
+const getPinchDistance = () => {
+  const [a, b] = [...touches.values()];
+  return Math.hypot(a.x - b.x, a.y - b.y);
+};
+const limitZoom = () => { globeView.zoom = Math.max(0.3, Math.min(8, globeView.zoom)); };
+
+globeCanvas.onpointerdown = event => {
+  globeCanvas.setPointerCapture(event.pointerId);
+  touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (touches.size == 2) pinchDistance = getPinchDistance();
+};
+
+globeCanvas.onpointermove = event => {
+  const before = touches.get(event.pointerId);
+  if (!before) return;
+  const after = { x: event.clientX, y: event.clientY };
+  touches.set(event.pointerId, after);
+
+  if (touches.size == 1) {
+    // one finger: turn the Earth. Dividing by the Earth’s size on screen turns pixels into angles.
+    const rect = globeCanvas.getBoundingClientRect();
+    const earthSize = Math.min(rect.width, rect.height) * 0.45 * globeView.zoom / globeView.fit;
+    globeView.lon -= (after.x - before.x) / earthSize / Math.max(Math.cos(globeView.lat), 0.25);
+    globeView.lat += (after.y - before.y) / earthSize;
+    globeView.lat = Math.max(-85 * DEG, Math.min(85 * DEG, globeView.lat));
+    getEl("follow-box").checked = false;   // you took control, so stop following
+  } else if (touches.size == 2) {
+    // two fingers: pinch to zoom
+    const distance = getPinchDistance();
+    if (pinchDistance > 0) globeView.zoom *= distance / pinchDistance;
+    pinchDistance = distance;
+    limitZoom();
+  }
+  globeDirty = true;
+};
+
+globeCanvas.onpointerup = globeCanvas.onpointercancel = event => touches.delete(event.pointerId);
+
+globeCanvas.addEventListener("wheel", event => {
+  event.preventDefault();   // zoom the globe, don't scroll the page
+  globeView.zoom *= Math.exp(-event.deltaY * 0.0015);
+  limitZoom();
+  globeDirty = true;
+}, { passive: false });
+
+getEl("globe-reset").onclick = () => {
+  globeView.zoom = 1;
+  getEl("follow-box").checked = true;
+  globeDirty = true;
+};
+
+window.addEventListener("resize", () => {
+  needsRedraw = true;
+});
+
+
+// ============================================================
+// start: load the built-in examples
+// ============================================================
+// real ISS TLE from 2019 (we recalculate the last digit with checksum())
+let issLine1 = "1 25544U 98067A   19343.69339541  .00001764  00000-0  38792-4 0  999";
+let issLine2 = "2 25544  51.6439 211.2001 0007417  17.6667  85.6398 15.5010347219919";
+issLine1 = issLine1.slice(0, 68) + checksum(issLine1);
+issLine2 = issLine2.slice(0, 68) + checksum(issLine2);
+
+loadSatellites({
+  out: [
+    makeDemoSatellite(0, "DEMO LEO", 53, 40, 0.0005, 90, 0, 15.2),
+    makeDemoSatellite(1, "DEMO SSO", 98.6, 120, 0.001, 90, 0, 14.6),
+    makeDemoSatellite(2, "DEMO MOLNIYA", 63.4, 200, 0.74, 270, 0, 2.006),
+    makeDemoSatellite(3, "DEMO GPS-LIKE", 55, 280, 0.005, 0, 120, 2.0057),
+    makeDemoSatellite(4, "DEMO GEO", 0.05, 0, 0.0002, 0, 255, 1.0027),
+    makeSatellite("ISS (2019 TLE)", issLine1, issLine2)
+  ],
+  bad: 0
+}, "built-in examples (made-up orbits, plus one real ISS from 2019)");
+
+buildTextures();   // draw the Earth pictures once before the first frame
+requestAnimationFrame(animationLoop);
+</script>
+</body>
+</html>
